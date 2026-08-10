@@ -15,10 +15,20 @@ version = "0.5.28"
 
 [features]
 default = []
+starry-userland = [
+  "dep:starry-kernel",
+  "ax-feat/fs-times",
+  "ax-std/fs",
+  "starry-kernel/dev-log",
+  "starry-kernel/ext4",
+]
+myplat = ["ax-feat/myplat"]
 qemu = [
-  "ax-runtime/irq",
-  "ax-runtime/rtc",
-  "ax-runtime/display",
+  "ax-feat/defplat",
+  "ax-feat/irq",
+  "ax-feat/rtc",
+  "ax-feat/display",
+  "starry-userland",
   "starry-kernel/input",
   "starry-kernel/vsock", # auxiliary features
 ]
@@ -28,6 +38,11 @@ qperf = ["ax-driver/nvme", "ax-driver/virtio-net", "ax-driver/virtio-socket"]
 qperf-metrics = []
 smp = ["ax-runtime/smp", "axplat-dyn/smp", "ax-hal/smp", "starry-kernel/ipi"]
 lockdep = ["ax-std/lockdep"]
+
+# AICP can run before Starry userland starts or as a regular userland app.
+qemu-aicp-native = ["ax-runtime/irq", "ax-runtime/rtc"]
+qemu-aicp-userland = ["qemu"]
+smp-aicp-native = ["ax-runtime/smp", "axplat-dyn/smp", "ax-hal/smp"]
 
 k230 = [
   "starry-kernel/k230-kpu",
@@ -50,21 +65,14 @@ name = "xtask"
 path = "xtask/main.rs"
 
 [dependencies]
-# Starry is a freestanding PIE. Keep host `std` compatibility and kernel TLS
-# out of the final feature tree.
-ax-std = { workspace = true, default-features = false, features = [
-  "alloc",
-  "fd",
-  "ext-ld",
-  "fs",
-  "multitask",
-  "irq",
-] }
+ax-feat = { workspace = true, features = ["ext-ld", "irq"] }
+ax-std = { workspace = true, features = ["ext-ld", "net", "multitask", "irq"] }
 ax-driver.workspace = true
 ax-hal.workspace = true
-ax-runtime = { workspace = true, features = ["ext-ld", "irq"] }
+ax-net.workspace = true
+ax-log.workspace = true
 axplat-dyn.workspace = true
-starry-kernel = { workspace = true, features = ["dev-log", "ext4"] }
+starry-kernel = { workspace = true, optional = true }
 
 [target.'cfg(any(windows, all(unix, not(target_env = "musl"))))'.dependencies]
 anyhow = { workspace = true, features = ["std"] }
