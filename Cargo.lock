@@ -189,6 +189,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "aicp-rust-protocol"
+version = "0.1.0"
+
+[[package]]
 name = "aliasable"
 version = "0.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -305,6 +309,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cab112f0a86d568ea0e627cc1d6be74a1e9cd55214684db5561995f6dad897c6"
 dependencies = [
  "num-traits",
+]
+
+[[package]]
+name = "arceos-aicp-server"
+version = "0.1.0"
+dependencies = [
+ "aicp-rust-protocol",
+ "ax-net",
+ "ax-std",
 ]
 
 [[package]]
@@ -1569,6 +1582,7 @@ version = "0.5.24"
 dependencies = [
  "anyhow",
  "ax-api",
+ "ax-crate-interface",
  "ax-driver",
  "ax-hal",
  "ax-std",
@@ -1577,6 +1591,7 @@ dependencies = [
  "axbuild",
  "axdevice",
  "axdevice_base",
+ "axplat-dyn",
  "axtest",
  "axvirtio-blk",
  "axvirtio-common",
@@ -8011,6 +8026,8 @@ dependencies = [
  "anyhow",
  "ax-driver",
  "ax-hal",
+ "ax-log",
+ "ax-net",
  "ax-runtime",
  "ax-std",
  "axbuild",
