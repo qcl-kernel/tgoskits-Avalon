@@ -99,13 +99,23 @@ fn is_aarch64_psci_function_id(raw_code: u64, abi: crate::runtime::hvc::HyperCal
 }
 
 fn complete_hypercall_decode_error<V: VmArchVcpuOps>(
-    vcpu: &crate::vm::AxVCpuRef<V>,
+    vcpu: &crate::vcpu::AxVCpu<V>,
     raw_code: u64,
     abi: crate::runtime::hvc::HyperCallAbi,
 ) {
     if is_aarch64_psci_function_id(raw_code, abi) {
         vcpu.set_return_value(PSCI_RET_NOT_SUPPORTED);
     }
+}
+
+/// Selects whether a guest idle request may block its dedicated host vCPU.
+///
+/// The CPU-isolated real-time profile cooperatively polls architectural timer
+/// state at every VM exit. This avoids depending on a secondary host CPU's
+/// idle timer wakeup, while the outer vCPU loop still yields to host tasks.
+#[inline(always)]
+pub(crate) const fn idle_waits_for_event() -> bool {
+    !cfg!(feature = "rt-poll-idle")
 }
 
 pub(crate) fn hvc_outcome_action(
@@ -119,7 +129,7 @@ pub(crate) fn hvc_outcome_action(
             HyperCallExitAction::CompleteWithReturn {
                 return_value,
                 action: VcpuRunAction {
-                    waits_for_event: true,
+                    waits_for_event: idle_waits_for_event(),
                     stop_reason: None,
                     resets_vm: false,
                     exits_vcpu: false,
@@ -263,9 +273,7 @@ mod tests {
 
     #[test]
     fn hvc_unknown_aarch64_psci_id_returns_not_supported() {
-        let vcpu = crate::vm::AxVCpuRef::new(
-            crate::vcpu::AxVCpu::<UnknownPsciVcpu>::new(99, 0, None, ()).unwrap(),
-        );
+        let vcpu = crate::vcpu::AxVCpu::<UnknownPsciVcpu>::new(99, 0, None, ()).unwrap();
 
         complete_hypercall_decode_error(
             &vcpu,
@@ -278,9 +286,7 @@ mod tests {
 
     #[test]
     fn hvc_unknown_non_aarch64_psci_id_does_not_clobber_return_value() {
-        let vcpu = crate::vm::AxVCpuRef::new(
-            crate::vcpu::AxVCpu::<UnknownPsciVcpu>::new(99, 0, None, ()).unwrap(),
-        );
+        let vcpu = crate::vcpu::AxVCpu::<UnknownPsciVcpu>::new(99, 0, None, ()).unwrap();
         vcpu.set_return_value(0x8400_000c);
 
         complete_hypercall_decode_error(

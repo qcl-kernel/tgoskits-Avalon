@@ -27,6 +27,7 @@ use axvmconfig::{
 };
 use fdt_edit::{Fdt, Node, NodeType, PciRange, PciSpace};
 
+use super::policy::DecodedInterrupt;
 use crate::{config::*, *};
 
 const PAGE_SIZE_4K: usize = 0x1000;
@@ -222,6 +223,83 @@ fn node_pci_ranges(fdt: &Fdt, node_id: usize) -> Vec<PciRange> {
     }
 }
 
+fn node_pci_interrupt_specifiers(fdt: &Fdt, node_id: usize) -> Vec<Vec<u32>> {
+    match fdt.view_typed(node_id) {
+        Some(NodeType::Pci(pci)) => pci
+            .interrupt_map()
+            .map(|entries| entries.into_iter().map(|entry| entry.parent_irq).collect())
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    }
+}
+
+fn inherited_interrupt_parent(fdt: &Fdt, node_path: &str) -> Option<u32> {
+    let mut current_path = node_path.to_string();
+    loop {
+        let parent = if current_path == "/" {
+            fdt.node(fdt.root_id())
+                .and_then(|node| node.get_property("interrupt-parent"))
+                .and_then(|property| property.get_u32())
+        } else {
+            fdt.get_by_path(&current_path)
+                .and_then(|node| node.as_node().get_property("interrupt-parent"))
+                .and_then(|property| property.get_u32())
+        };
+        if let Some(parent) = parent {
+            return Some(parent);
+        }
+        if current_path == "/" {
+            return None;
+        }
+        let parent_end = current_path.rfind('/').unwrap_or(0).max(1);
+        current_path.truncate(parent_end);
+    }
+}
+
+fn interrupt_parent_cell_count(fdt: &Fdt, parent: u32) -> Option<usize> {
+    fdt.iter_node_ids().find_map(|node_id| {
+        let node = fdt.node(node_id)?;
+        let phandle = node
+            .get_property("phandle")
+            .or_else(|| node.get_property("linux,phandle"))
+            .and_then(|property| property.get_u32())?;
+        if phandle != parent {
+            return None;
+        }
+        node.get_property("#interrupt-cells")
+            .and_then(|property| property.get_u32())
+            .map(|count| count as usize)
+            .filter(|count| *count > 0)
+    })
+}
+
+fn node_interrupt_specifiers(fdt: &Fdt, node_id: usize, node_path: &str) -> Vec<Vec<u32>> {
+    let raw_specifiers = fdt
+        .node(node_id)
+        .and_then(|node| node.get_property("interrupts"));
+    if let (Some(raw_specifiers), Some(parent)) =
+        (raw_specifiers, inherited_interrupt_parent(fdt, node_path))
+        && let Some(cell_count) = interrupt_parent_cell_count(fdt, parent)
+    {
+        let cells = raw_specifiers.get_u32_iter().collect::<Vec<_>>();
+        if cells.len().is_multiple_of(cell_count) {
+            return cells
+                .chunks_exact(cell_count)
+                .map(|specifier| specifier.to_vec())
+                .collect();
+        }
+    }
+
+    fdt.view_typed(node_id)
+        .map(|view| {
+            view.interrupts()
+                .into_iter()
+                .map(|interrupt| interrupt.specifier)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 pub fn reserve_excluded_device_ranges(
     vm_cfg: &mut AxVMConfig,
     crate_cfg: &GuestConfig,
@@ -239,12 +317,15 @@ pub fn reserve_excluded_device_ranges(
         return Ok(());
     }
     let mut reserved_ranges = Vec::new();
+    let decode_interrupt = super::selected_guest_fdt_policy().decode_interrupt;
 
     for node_id in fdt.iter_node_ids() {
         let node_path = fdt.path_of(node_id);
         if !is_excluded_node_path(&node_path, &excluded_paths) {
             continue;
         }
+
+        exclude_node_interrupt_sources(vm_cfg, &fdt, node_id, decode_interrupt);
 
         for reg in node_regs(&fdt, node_id) {
             push_reserved_address_range(
@@ -271,6 +352,20 @@ pub fn reserve_excluded_device_ranges(
     }
 
     Ok(())
+}
+
+fn exclude_node_interrupt_sources(
+    vm_cfg: &mut AxVMConfig,
+    fdt: &Fdt,
+    node_id: usize,
+    decode_interrupt: fn(&[u32]) -> Option<DecodedInterrupt>,
+) {
+    let node_path = fdt.path_of(node_id);
+    for specifier in node_interrupt_specifiers(fdt, node_id, &node_path) {
+        if let Some(interrupt) = decode_interrupt(&specifier) {
+            vm_cfg.exclude_pass_through_irq_source(interrupt.source);
+        }
+    }
 }
 
 fn protect_machine_owned_firmware_devices(
@@ -518,7 +613,7 @@ fn resolve_phys_cpu_sets(
 
 fn add_device_address_config(
     vm_cfg: &mut AxVMConfig,
-    node_name: &str,
+    node_path: &str,
     base_address: usize,
     size: usize,
     index: usize,
@@ -530,13 +625,13 @@ fn add_device_address_config(
 
     let device_name = if index == 0 {
         match prefix {
-            Some(p) => format!("{node_name}-{p}"),
-            None => node_name.to_string(),
+            Some(p) => format!("{node_path}-{p}"),
+            None => node_path.to_string(),
         }
     } else {
         match prefix {
-            Some(p) => format!("{node_name}-{p}-region{index}"),
-            None => format!("{node_name}-region{index}"),
+            Some(p) => format!("{node_path}-{p}-region{index}"),
+            None => format!("{node_path}-region{index}"),
         }
     };
 
@@ -548,7 +643,7 @@ fn add_device_address_config(
     });
 }
 
-fn add_pci_ranges_config(vm_cfg: &mut AxVMConfig, node_name: &str, range: &PciRange, index: usize) {
+fn add_pci_ranges_config(vm_cfg: &mut AxVMConfig, node_path: &str, range: &PciRange, index: usize) {
     let base_address = range.cpu_address as usize;
     let size = range.size as usize;
 
@@ -563,9 +658,9 @@ fn add_pci_ranges_config(vm_cfg: &mut AxVMConfig, node_name: &str, range: &PciRa
     };
 
     let device_name = if index == 0 {
-        format!("{node_name}-{prefix}")
+        format!("{node_path}-{prefix}")
     } else {
-        format!("{node_name}-{prefix}-region{index}")
+        format!("{node_path}-{prefix}-region{index}")
     };
 
     vm_cfg.add_pass_through_device(HostDeviceAssignment {
@@ -619,16 +714,16 @@ pub fn parse_passthrough_devices_address(
             continue;
         }
 
-        let node_name = node.name().to_string();
+        let node_name = node.name();
         if node_name.starts_with("pcie@") || node_name.contains("pci") {
             for (index, range) in node_pci_ranges(&fdt, node_id).iter().enumerate() {
-                add_pci_ranges_config(vm_cfg, &node_name, range, index);
+                add_pci_ranges_config(vm_cfg, &node_path, range, index);
             }
 
             for (index, reg) in node_regs(&fdt, node_id).iter().enumerate() {
                 add_device_address_config(
                     vm_cfg,
-                    &node_name,
+                    &node_path,
                     reg.address as usize,
                     reg.size.unwrap_or(0) as usize,
                     index,
@@ -639,7 +734,7 @@ pub fn parse_passthrough_devices_address(
             for (index, reg) in node_regs(&fdt, node_id).iter().enumerate() {
                 add_device_address_config(
                     vm_cfg,
-                    &node_name,
+                    &node_path,
                     reg.address as usize,
                     reg.size.unwrap_or(0) as usize,
                     index,
@@ -651,7 +746,11 @@ pub fn parse_passthrough_devices_address(
     Ok(())
 }
 
-pub fn parse_vm_interrupt(vm_cfg: &mut AxVMConfig, dtb: &[u8]) -> AxVmResult {
+pub fn parse_vm_interrupt(
+    vm_cfg: &mut AxVMConfig,
+    crate_cfg: &GuestConfig,
+    dtb: &[u8],
+) -> AxVmResult {
     let decode_interrupt = super::selected_guest_fdt_policy().decode_interrupt;
     let fdt = Fdt::from_bytes(dtb).map_err(|e| {
         ax_err_type!(
@@ -662,8 +761,8 @@ pub fn parse_vm_interrupt(vm_cfg: &mut AxVMConfig, dtb: &[u8]) -> AxVmResult {
     let selected_paths = super::device::find_all_passthrough_devices(vm_cfg, &fdt)
         .into_iter()
         .collect::<BTreeSet<_>>();
+    let excluded_paths = excluded_device_paths(vm_cfg, crate_cfg);
     let host_owned_serial_paths = super::serial::physical_serial_paths(&fdt);
-
     for node_id in fdt.iter_node_ids() {
         let Some(node) = fdt.node(node_id) else {
             continue;
@@ -671,6 +770,7 @@ pub fn parse_vm_interrupt(vm_cfg: &mut AxVMConfig, dtb: &[u8]) -> AxVmResult {
         let name = node.name();
         let path = fdt.path_of(node_id);
         if !selected_paths.contains(&path)
+            || is_excluded_node_path(&path, &excluded_paths)
             || name.starts_with("memory")
             || name.starts_with("interrupt-controller")
             || name.starts_with("intc")
@@ -680,11 +780,24 @@ pub fn parse_vm_interrupt(vm_cfg: &mut AxVMConfig, dtb: &[u8]) -> AxVmResult {
             continue;
         }
 
-        let Some(view) = fdt.view_typed(node_id) else {
-            continue;
-        };
-        for interrupt in view.interrupts() {
-            if let Some(interrupt) = decode_interrupt(&interrupt.specifier) {
+        let mut interrupt_specifiers = node_interrupt_specifiers(&fdt, node_id, &path);
+        let pci_interrupt_specifiers = node_pci_interrupt_specifiers(&fdt, node_id);
+        if matches!(fdt.view_typed(node_id), Some(NodeType::Pci(_))) {
+            info!(
+                "selected PCI host {path} exposes {} parent interrupt route(s): \
+                 {pci_interrupt_specifiers:?}",
+                pci_interrupt_specifiers.len()
+            );
+        }
+        interrupt_specifiers.extend(pci_interrupt_specifiers);
+        for specifier in interrupt_specifiers {
+            if let Some(interrupt) = decode_interrupt(&specifier) {
+                if vm_cfg
+                    .excluded_passthrough_irq_sources()
+                    .contains(&interrupt.source)
+                {
+                    continue;
+                }
                 trace!(
                     "node: {name}, passthrough interrupt source: {:#x}, trigger: {:?}",
                     interrupt.source, interrupt.trigger
@@ -696,7 +809,6 @@ pub fn parse_vm_interrupt(vm_cfg: &mut AxVMConfig, dtb: &[u8]) -> AxVmResult {
 
     Ok(())
 }
-
 pub fn update_provided_fdt(
     provided_dtb: &[u8],
     host_dtb: Option<&[u8]>,
@@ -789,6 +901,83 @@ mod tests {
         fdt.encode().as_ref().to_vec()
     }
 
+    fn fdt_with_inherited_gic_interrupt() -> Vec<u8> {
+        let mut fdt = Fdt::new();
+        let root = fdt.root_id();
+        fdt.node_mut(root)
+            .unwrap()
+            .set_property(prop_u32("interrupt-parent", 1));
+
+        let device = fdt.add_node(root, Node::new("virtio_mmio@a003c00"));
+        fdt.node_mut(device)
+            .unwrap()
+            .set_property(prop_u32_list("interrupts", &[0, 46, 1]));
+
+        let intc = fdt.add_node(root, Node::new("intc@8000000"));
+        fdt.node_mut(intc)
+            .unwrap()
+            .set_property(fdt_edit::Property::new("interrupt-controller", std::vec![]));
+        fdt.node_mut(intc)
+            .unwrap()
+            .set_property(super::super::tree::prop_string("compatible", "arm,gic-v3"));
+        fdt.node_mut(intc)
+            .unwrap()
+            .set_property(prop_u32("#interrupt-cells", 3));
+        fdt.node_mut(intc)
+            .unwrap()
+            .set_property(prop_u32("phandle", 1));
+
+        fdt.encode().as_ref().to_vec()
+    }
+
+    fn fdt_with_pci_interrupt_map() -> Vec<u8> {
+        let mut fdt = Fdt::new();
+        let root = fdt.root_id();
+        fdt.node_mut(root)
+            .unwrap()
+            .set_property(prop_u32("#address-cells", 2));
+        fdt.node_mut(root)
+            .unwrap()
+            .set_property(prop_u32("#size-cells", 2));
+
+        let intc = fdt.add_node(root, Node::new("intc@8000000"));
+        fdt.node_mut(intc)
+            .unwrap()
+            .set_property(fdt_edit::Property::new("interrupt-controller", std::vec![]));
+        fdt.node_mut(intc)
+            .unwrap()
+            .set_property(prop_u32("#interrupt-cells", 3));
+        fdt.node_mut(intc)
+            .unwrap()
+            .set_property(prop_u32("phandle", 1));
+
+        let pcie = fdt.add_node(root, Node::new("pcie@10000000"));
+        fdt.node_mut(pcie)
+            .unwrap()
+            .set_property(super::super::tree::prop_string(
+                "compatible",
+                "pci-host-ecam-generic",
+            ));
+        fdt.node_mut(pcie)
+            .unwrap()
+            .set_property(prop_u32("#address-cells", 3));
+        fdt.node_mut(pcie)
+            .unwrap()
+            .set_property(prop_u32("#size-cells", 2));
+        fdt.node_mut(pcie)
+            .unwrap()
+            .set_property(prop_u32("#interrupt-cells", 1));
+        fdt.node_mut(pcie)
+            .unwrap()
+            .set_property(prop_u32_list("interrupt-map-mask", &[0x1800, 0, 0, 7]));
+        fdt.node_mut(pcie).unwrap().set_property(prop_u32_list(
+            "interrupt-map",
+            &[0x800, 0, 0, 1, 1, 0, 3, 4],
+        ));
+
+        fdt.encode().as_ref().to_vec()
+    }
+
     fn fdt_with_platform_timer_and_device_interrupts() -> Vec<u8> {
         let mut fdt = Fdt::new();
         let root = fdt.root_id();
@@ -813,6 +1002,7 @@ mod tests {
         for (name, compatible, base, irq) in [
             ("timer@10002000", "vendor,soc-timer", 0x1000_2000, 12),
             ("virtio_mmio@10001000", "virtio,mmio", 0x1000_1000, 11),
+            ("gpio@10003000", "vendor,gpio", 0x1000_3000, 13),
         ] {
             let node = fdt.add_node(root, Node::new(name));
             fdt.node_mut(node)
@@ -1141,7 +1331,7 @@ mod tests {
         crate_cfg.base.guest_type = GuestType::Passthrough;
 
         reserve_excluded_device_ranges(&mut vm_cfg, &crate_cfg, &dtb).unwrap();
-        parse_vm_interrupt(&mut vm_cfg, &dtb).unwrap();
+        parse_vm_interrupt(&mut vm_cfg, &crate_cfg, &dtb).unwrap();
         parse_passthrough_devices_address(&mut vm_cfg, &crate_cfg, &dtb).unwrap();
 
         assert!(
@@ -1201,7 +1391,7 @@ mod tests {
         };
 
         reserve_excluded_device_ranges(&mut vm_cfg, &crate_cfg, &dtb).unwrap();
-        parse_vm_interrupt(&mut vm_cfg, &dtb).unwrap();
+        parse_vm_interrupt(&mut vm_cfg, &crate_cfg, &dtb).unwrap();
 
         assert_eq!(
             vm_cfg
@@ -1210,6 +1400,99 @@ mod tests {
                 .map(|interrupt| interrupt.source)
                 .collect::<Vec<_>>(),
             [11]
+        );
+    }
+
+    #[test]
+    fn inherited_gic_interrupt_cells_are_kept_as_one_specifier() {
+        let dtb = fdt_with_inherited_gic_interrupt();
+        let mut vm_cfg = AxVMConfig::new(AxVMConfigParams {
+            id: 1,
+            name: "test".to_string(),
+            phys_cpu_ls: PhysCpuList::new(1, None, None),
+            pass_through_devices: vec![HostDeviceAssignment {
+                name: "/virtio_mmio@a003c00".to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+
+        parse_vm_interrupt(&mut vm_cfg, &GuestConfig::default(), &dtb).unwrap();
+
+        assert_eq!(
+            vm_cfg
+                .pass_through_irqs()
+                .iter()
+                .map(|interrupt| interrupt.source)
+                .collect::<Vec<_>>(),
+            [46]
+        );
+    }
+
+    #[test]
+    fn selected_pci_host_forwards_interrupt_map_parent_routes() {
+        let dtb = fdt_with_pci_interrupt_map();
+        let mut vm_cfg = AxVMConfig::new(AxVMConfigParams {
+            id: 1,
+            name: "test".to_string(),
+            phys_cpu_ls: PhysCpuList::new(1, None, None),
+            pass_through_devices: vec![HostDeviceAssignment {
+                name: "/pcie@10000000".to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+
+        parse_vm_interrupt(&mut vm_cfg, &GuestConfig::default(), &dtb).unwrap();
+
+        assert_eq!(
+            vm_cfg
+                .pass_through_irqs()
+                .iter()
+                .map(|interrupt| interrupt.source)
+                .collect::<Vec<_>>(),
+            [3]
+        );
+    }
+
+    #[test]
+    fn excluded_passthrough_device_interrupt_is_not_added_to_routes() {
+        let dtb = fdt_with_platform_timer_and_device_interrupts();
+        let mut vm_cfg = AxVMConfig::new(AxVMConfigParams {
+            id: 1,
+            name: "passthrough".to_string(),
+            phys_cpu_ls: PhysCpuList::new(1, None, None),
+            pass_through_devices: vec![HostDeviceAssignment {
+                name: "/".to_string(),
+                ..Default::default()
+            }],
+            excluded_devices: vec![vec!["/virtio_mmio@10001000".to_string()]],
+            address_space_policy: AddressSpacePolicy::Passthrough,
+            ..Default::default()
+        });
+        let crate_cfg = GuestConfig::default();
+
+        reserve_excluded_device_ranges(&mut vm_cfg, &crate_cfg, &dtb).unwrap();
+        parse_vm_interrupt(&mut vm_cfg, &crate_cfg, &dtb).unwrap();
+
+        assert!(vm_cfg.excluded_passthrough_irq_sources().contains(&11));
+        assert!(
+            vm_cfg
+                .pass_through_irqs()
+                .iter()
+                .all(|interrupt| interrupt.source != 11)
+        );
+        assert!(
+            vm_cfg
+                .pass_through_irqs()
+                .iter()
+                .all(|interrupt| interrupt.source != 12)
+        );
+        assert!(
+            vm_cfg
+                .pass_through_irqs()
+                .iter()
+                .any(|interrupt| interrupt.source == 13)
         );
     }
 }

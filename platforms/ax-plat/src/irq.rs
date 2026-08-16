@@ -2,14 +2,13 @@
 
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-use ax_kernel_guard::BaseGuard;
+use ax_lazyinit::OnceLock;
 pub use irq_framework::{
     AcpiGsiController, AcpiGsiRoute, AcpiIrqPolarity, AcpiIrqTrigger, AutoEnable, BoxedIrqHandler,
     CpuId, CpuMask, HwIrq, IrqAffinity, IrqContext, IrqDomainId, IrqError, IrqExecution, IrqHandle,
     IrqId, IrqOps, IrqOutcome, IrqRequest, IrqReturn, IrqScope, IrqSource, IrqStatus, IrqTrigger,
     Registry, ShareMode, TrapVector,
 };
-use spin::Once;
 
 #[cfg(target_arch = "loongarch64")]
 pub mod loongarch64_hv;
@@ -43,6 +42,18 @@ pub const LOONGARCH_EIOINTC_DOMAIN: IrqDomainId = IrqDomainId(5);
 
 /// LoongArch PCH-PIC interrupt domain.
 pub const LOONGARCH_PCH_PIC_DOMAIN: IrqDomainId = IrqDomainId(6);
+
+/// Result of offering an acknowledged physical IRQ to a guest.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub enum GuestIrqInjection {
+    /// No guest owns or accepted the interrupt.
+    NotHandled,
+    /// The guest received a software representation of the interrupt.
+    Emulated,
+    /// The guest now owns the physical active state until its virtual EOI.
+    HardwareForwarded,
+}
 
 /// Creates a legacy IRQ id without truncating the raw IRQ number.
 pub fn try_legacy_irq(raw: usize) -> Result<IrqId, IrqError> {
@@ -100,7 +111,7 @@ pub unsafe fn run_on_cpu_sync(
 struct PlatIrqOps;
 
 impl IrqOps for PlatIrqOps {
-    type LocalIrqState = <ax_kernel_guard::IrqSave as BaseGuard>::State;
+    type LocalIrqState = usize;
 
     fn current_cpu(&self) -> CpuId {
         CpuId(crate::percpu::this_cpu_id())
@@ -115,11 +126,12 @@ impl IrqOps for PlatIrqOps {
     }
 
     fn local_irq_save(&self) -> Self::LocalIrqState {
-        ax_kernel_guard::IrqSave::acquire()
+        ax_sync::irq_save_and_disable()
     }
 
     fn local_irq_restore(&self, state: Self::LocalIrqState) {
-        ax_kernel_guard::IrqSave::release(state);
+        // SAFETY: `state` was returned by the matching save on this CPU.
+        unsafe { ax_sync::irq_restore(state) };
     }
 
     fn run_on_cpu_sync(
@@ -167,7 +179,7 @@ impl IrqOps for PlatIrqOps {
     }
 }
 
-static IRQ_REGISTRY: Once<Registry<PlatIrqOps>> = Once::new();
+static IRQ_REGISTRY: OnceLock<Registry<PlatIrqOps>> = OnceLock::new();
 static ONLINE_CPUS: AtomicUsize = AtomicUsize::new(0);
 static IRQ_CONTEXT_CPUS: AtomicUsize = AtomicUsize::new(0);
 
@@ -177,7 +189,7 @@ fn registry() -> &'static Registry<PlatIrqOps> {
 
 /// Returns whether the current CPU is dispatching an IRQ action.
 pub fn in_irq_context() -> bool {
-    let _guard = ax_kernel_guard::NoPreempt::new();
+    let _guard = ax_sync::PreemptGuard::new();
     // SAFETY: the guard prevents migration across both CPU identity resolution
     // and the matching context-bit read. Releasing an inner guard between these
     // operations could resume this thread on another CPU with a stale ID.

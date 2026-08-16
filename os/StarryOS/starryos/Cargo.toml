@@ -27,6 +27,12 @@ qemu = [
 qperf = ["ax-driver/nvme", "ax-driver/virtio-net", "ax-driver/virtio-socket"]
 qperf-metrics = []
 smp = ["ax-runtime/smp", "axplat-dyn/smp", "ax-hal/smp", "starry-kernel/ipi"]
+lockdep = ["ax-std/lockdep"]
+
+# AICP can run before Starry userland starts or as a regular userland app.
+qemu-aicp-native = ["dep:ax-log", "dep:ax-net", "ax-std/net", "ax-runtime/irq", "ax-runtime/rtc"]
+qemu-aicp-userland = ["qemu"]
+smp-aicp-native = ["ax-runtime/smp", "axplat-dyn/smp", "ax-hal/smp"]
 
 k230 = [
   "starry-kernel/k230-kpu",
@@ -61,6 +67,8 @@ ax-std = { workspace = true, default-features = false, features = [
 ] }
 ax-driver.workspace = true
 ax-hal.workspace = true
+ax-log = { workspace = true, optional = true }
+ax-net = { workspace = true, optional = true }
 ax-runtime = { workspace = true, features = ["ext-ld", "irq"] }
 axplat-dyn.workspace = true
 starry-kernel = { workspace = true, features = ["dev-log", "ext4"] }

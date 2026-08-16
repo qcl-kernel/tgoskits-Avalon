@@ -10,10 +10,8 @@ use ax_memory_addr::PAGE_SIZE_4K;
 use ax_std::os::arceos::{api, modules};
 use axvm_types::{HostPhysAddr, HostVirtAddr};
 
-#[cfg(any(feature = "fs", feature = "host-fs"))]
-use crate::AxVmError;
 use crate::{
-    AxVmResult,
+    AxVmError, AxVmResult,
     arch::{ArchOps, CurrentArch},
     host::{HostCpu, HostMemory, HostPlatform, HostTime},
 };
@@ -82,6 +80,7 @@ impl HostTime for ArceOsHost {
         modules::ax_hal::time::monotonic_time()
     }
 
+    #[cfg(not(test))]
     fn request_timer_deadline(&self, deadline_ns: u64) {
         crate::arch::request_timer_deadline(deadline_ns);
     }
@@ -130,6 +129,7 @@ pub(crate) type ArceOsAxTaskRef = modules::ax_task::AxTaskRef;
 pub(crate) type ArceOsCurrentTask = modules::ax_task::CurrentTask;
 pub(crate) type ArceOsTaskInner = modules::ax_task::TaskInner;
 pub(crate) type ArceOsWaitQueue = modules::ax_task::WaitQueue;
+#[cfg(any(not(test), target_arch = "aarch64"))]
 pub(crate) type ArceOsIrqError = modules::ax_hal::irq::IrqError;
 pub(crate) type ArceOsWaitQueueHandle = api::task::AxWaitQueueHandle;
 pub(crate) use modules::ax_task::TaskExt as ArceOsTaskExt;
@@ -140,6 +140,13 @@ pub(crate) fn current_task() -> ArceOsCurrentTask {
 
 pub(crate) fn spawn_task(task: ArceOsTaskInner) -> ArceOsAxTaskRef {
     modules::ax_task::spawn_task(task)
+}
+
+pub(crate) fn spawn_task_with(
+    task: ArceOsTaskInner,
+    initialize: impl FnOnce(&ArceOsAxTaskRef),
+) -> ArceOsAxTaskRef {
+    modules::ax_task::spawn_task_with(task, initialize)
 }
 
 pub(crate) fn yield_now() {
@@ -168,6 +175,7 @@ pub(crate) fn send_ipi(cpu_id: usize) {
     .unwrap_or_else(|err| panic!("failed to deliver AxVM IPI to CPU {cpu_id}: {err:?}"));
 }
 
+#[cfg(any(not(test), target_arch = "aarch64"))]
 pub(crate) fn run_on_cpu_sync(
     cpu_id: usize,
     f: unsafe fn(*mut ()),
@@ -386,17 +394,16 @@ impl HostPlatform for ArceOsHost {
                 break;
             }
         }
-        CurrentArch::register_platform_irq_injector();
         let enabled_count = CORES.load(Ordering::Acquire);
         if enabled_count == cpu_count {
             info!("All cores have enabled hardware virtualization support.");
         } else {
-            warn!(
-                "Only {enabled_count}/{cpu_count} cores enabled hardware virtualization before \
-                 timeout; continuing with host CPU mask {:#x}",
-                crate::percpu::enabled_cpu_mask()
-            );
+            return Err(AxVmError::host(
+                "enable virtualization on all CPUs",
+                std::format!("only {enabled_count}/{cpu_count} CPUs completed before the timeout"),
+            ));
         }
+        CurrentArch::register_platform_irq_injector();
         Ok(())
     }
 }

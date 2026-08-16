@@ -49,8 +49,7 @@ use core::{
 };
 
 use ax_hal::time::{NANOS_PER_MICROS, monotonic_time_nanos};
-use ax_kspin::SpinRwLock as RwLock;
-use ax_sync::Mutex;
+use ax_sync::{Mutex, SpinRwLock as RwLock};
 use ax_task::WaitQueue;
 use axpoll::IoEvents;
 use smoltcp::{
@@ -59,13 +58,13 @@ use smoltcp::{
     storage::PacketMetadata,
     time::Instant,
     wire::{
-        IpAddress, IpCidr, IpProtocol, IpVersion, Ipv4Address, Ipv4Cidr, Ipv4Packet, Ipv6Packet,
-        TcpPacket,
+        EthernetAddress, IpAddress, IpCidr, IpProtocol, IpVersion, Ipv4Address, Ipv4Cidr,
+        Ipv4Packet, Ipv6Packet, TcpPacket,
     },
 };
 
 use crate::{
-    LISTEN_TABLE,
+    LISTEN_TABLE, NetError, NetResult,
     config::{DeviceBinding, InterfaceId, RouteInfo},
     consts::{DEVICE_RX_QUEUE_SIZE, DEVICE_TX_QUEUE_SIZE, SOCKET_BUFFER_SIZE, STANDARD_MTU},
     device::{ArpEntry, Device},
@@ -864,6 +863,25 @@ impl Router {
         entries
     }
 
+    /// Installs a permanent neighbor mapping on one Ethernet interface.
+    pub fn set_static_neighbor(
+        &self,
+        interface_id: InterfaceId,
+        ip: IpAddress,
+        hardware: EthernetAddress,
+    ) -> NetResult {
+        let device = self
+            .devices
+            .iter()
+            .find(|device| device.interface_id == interface_id)
+            .ok_or(NetError::NoSuchDevice)?;
+        if device.inner.lock().set_static_neighbor(ip, hardware) {
+            Ok(())
+        } else {
+            Err(NetError::OperationNotSupported)
+        }
+    }
+
     /// Returns a per-interface snapshot of RX/TX byte and packet counters.
     pub fn net_dev_stats(&self) -> Vec<NetDevStats> {
         self.devices.iter().map(|device| device.stats()).collect()
@@ -977,18 +995,21 @@ fn dispatch_unicast_packet(
     packet: &[u8],
     sockets: &mut SocketSet<'_>,
 ) -> bool {
-    let routes = table.read();
-    let Some(route) = routes.select_route_for_source(&dst_addr, &src_addr) else {
-        debug!(
-            "No route found for source {} destination {}",
-            src_addr, dst_addr
-        );
-        // The packet is dropped at the IP layer before reaching any device's
-        // ndo_start_xmit.  Linux accounts this via the system-wide SNMP counter
-        // IPSTATS_MIB_OUTNOROUTES (IpOutNoRoutes in /proc/net/snmp), never via
-        // per-device tx_dropped.  Once system-level SNMP counters are available
-        // this should update IpOutNoRoutes instead.
-        return false;
+    let route = {
+        let routes = table.read();
+        let Some(route) = routes.select_route_for_source(&dst_addr, &src_addr) else {
+            debug!(
+                "No route found for source {} destination {}",
+                src_addr, dst_addr
+            );
+            // The packet is dropped at the IP layer before reaching any device's
+            // ndo_start_xmit.  Linux accounts this via the system-wide SNMP counter
+            // IPSTATS_MIB_OUTNOROUTES (IpOutNoRoutes in /proc/net/snmp), never via
+            // per-device tx_dropped.  Once system-level SNMP counters are available
+            // this should update IpOutNoRoutes instead.
+            return false;
+        };
+        route
     };
 
     let dev = &devices[route.dev];

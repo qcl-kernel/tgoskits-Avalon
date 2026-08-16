@@ -152,6 +152,21 @@ execution and then fail only on traps or vCPU exits, so it is not a valid fallba
   initialization message.
 - Confirm the runtime reports `EL: 2`, inspect the resolved `ax-cpu` feature set for `arm-el2`, and
   verify that a post-`ioremap` MMIO access succeeds before instrumenting the device driver itself.
+- Keep the Axvisor host exception vector installed while ordinary host tasks run. The vCPU vector
+  belongs only to the IRQ-masked world-switch window: save `VBAR_EL2`, install the vCPU vector and
+  execute an ISB immediately before guest restore/entry, then restore the host vector and execute
+  an ISB before returning to host Rust. Installing the vCPU vector permanently from per-CPU
+  virtualization enablement can route an unrelated current-EL host abort through the guest exit
+  decoder. A characteristic symptom is an intermittent `DataAbortCurrentEL` from an idle, GC, or
+  timer task during multi-core VM initialization, before that CPU has entered a guest.
+- Decode trapped `WFI` and `WFE` instructions separately from `ESR_EL2.ISS.TI`. Only `WFI` may
+  enter the interrupt/timer wait path. Until Axvisor models the guest event register and virtual
+  `SEV` delivery, set `HCR_EL2.TWE` and complete trapped WFE as a permitted spurious return. Leaving
+  WFE native can intermittently park early Linux boot on an event that does not cross the VMM/QEMU
+  boundary. Do not yield while the vCPU remains bound inside the architecture run window; return a
+  completed, non-waiting exit and let the common outer vCPU loop perform its single cooperative
+  host yield. Never block WFE on an interrupt notification, because that cannot represent a guest
+  SEV event.
 - Axvisor QEMU and board test cases own their CPU-count contract. Test requests must discard an
   interactive snapshot's `smp` value; otherwise a stale `tmp/axbuild/.axvisor.toml` can silently
   shrink the host. A Phytium guest assigned to logical CPU 2 will then fall back to CPU 0 and may
@@ -182,6 +197,26 @@ Use this order when auditing an early boot port:
 10. Runtime CPU areas and secondary boot stacks are dynamically allocated; every typed area is
     initialized once, frozen, and bound through the architecture CPU-local register contract.
 11. Secondary CPU release happens only after boot arguments and page tables are visible to other CPUs.
+12. The architecture hook ends after delivering its wake transport. The common someboot owner
+    publishes one per-CPU `KICKED` state before that hook, waits for the secondary to report
+    `ALIVE` at the common entry, and then releases exactly that CPU as `SHOULD_ONLINE`. Keep this
+    handshake outside immutable trampoline metadata and separate from the later OS scheduler,
+    IRQ, and timer online publication. See `book/design/someboot-secondary-cpu-startup.md`.
+
+## AArch64 Axvisor Assigned-SPI Notes
+
+- Do not install a competing host IRQ action for a physical SPI assigned to a guest. Publish a
+  preallocated ownership route before enabling the VM, so an IRQ acknowledged at current EL can
+  be recognized without VM lookup or allocation in the top half.
+- Route current-EL host IRQ entries and lower-EL guest exits through the same canonical VGIC. For
+  current-EL delivery, transfer the acknowledged physical active state into a hardware-backed LR:
+  perform the priority drop, defer physical deactivation, and let Guest EOI retire the source.
+  Replacing this with a software VGIC pulse plus early host DIR loses the level/active lifecycle;
+  a characteristic failure is an unhandled assigned SPI followed by Linux `NETDEV WATCHDOG` TX
+  timeouts.
+- When a selected PCI host has an `interrupt-map`, parse its parent GIC routes before expanding
+  passthrough address ranges. Expansion changes the selected resource names and can otherwise
+  make interrupt discovery incorrectly treat the original PCI node as unselected.
 
 ## RISC-V FDT SMP Notes
 
@@ -208,9 +243,21 @@ work even when the kernel image and CPU topology are correct.
   from dense logical CPU indices. Both the maintained single-core board test
   and an eight-core boot have been validated.
 - GICv2 CPU target bits are firmware/controller interface IDs, not dense
-  logical CPU indices. Record each CPU's banked `GICD_ITARGETSR0` mask during
-  per-CPU initialization and reuse that mask for SPI affinity, AxVM-assigned
-  physical SPIs, and SGIs.
+  logical CPU indices. Scan all 32 banked private `GICD_ITARGETSR` bytes during
+  per-CPU initialization and record the unique one-hot mask in the shared route table
+  used by SPI affinity, AxVM-assigned physical SPIs, and SGIs. A zero mask is
+  valid only when `GICD_TYPER.CPUNumber` reports a uniprocessor controller whose
+  target registers are RAZ/WI; the OS runtime CPU limit alone is not sufficient.
+  For that implicit route, leave SPI targets untouched and use the SGI
+  self-filter instead of inventing a CPU bit. SMP must fail discovery when no
+  unique target bit exists.
+- Keep the AArch64 QEMU multiprocessor regression on
+  `virt,gic-version=2` with SMP4 and run
+  `cargo xtask arceos test qemu --arch aarch64 --test-group rust --test-case task-ipi`.
+  The case must verify a
+  self-SGI is claimed and that callbacks sent from other CPUs execute only on
+  the selected remote CPU. This explicit-target test complements, but does not
+  replace, the driver unit regression for the GICv2 uniprocessor RAZ/WI route.
 - The RK3576 CRU node must be `rockchip,rk3576-cru` at `0x2720_0000`, size
   `0x50000`. Early driver evidence should include
   `RK3576 CRU reg: addr=0x27200000, size=0x50000` followed by
@@ -285,7 +332,7 @@ device-specific drivers.
 - Relocated symbols must be resolved relative to the running image. In the LoongArch SMP path, the secondary exception vector had to use a runtime symbol helper such as `sym_running_addr!(__exception_vectors)`, while the TLB refill entry needed the corresponding physical address.
 - A secondary CPU can fault before it has a working serial path. Put markers before and after DMW setup, stack switch, page table register setup, trap-vector setup, and jump to the common secondary entry.
 - Initialize trap vectors on every CPU, not only the boot CPU.
-- Flush or barrier boot arguments before `cpu_on`; otherwise secondaries can observe stale stack, page table, or per-CPU data.
+- Flush or barrier boot arguments before the architecture CPU-on transport; otherwise secondaries can observe stale stack, page table, or per-CPU data.
 - Keep logical CPU ID mapping separate from firmware CPU IDs. LoongArch CPU IDs in firmware data are not guaranteed to be dense array indices.
 - Compare ordering with local Linux architecture code when uncertain. For LoongArch, useful topics include DMW setup, CSR write ordering, TLB refill vector, exception entry, SMP boot argument handoff, and cache/TLB barriers.
 
@@ -334,6 +381,7 @@ Important details:
 - Use short serial markers for phase isolation. Example phases: `E` for UEFI entry, `M` for memory map, `X` before exit boot services, `x` after exit, `P` before paging, `p` after paging, `T` after trap vectors, `S` before secondary release.
 - Remove markers before finalizing unless they become intentional diagnostics.
 - If QEMU is launched by `ostool`, patch the local ostool or xtask wrapper temporarily rather than hand-assembling a different command line. The reproduced command must remain faithful to the failing path.
+- For an AArch64 guest that intermittently stops after WFI, keep architectural-timer registration at the final vCPU sleep boundary. Registering once in VM-exit handling and replacing it immediately before the wait can invalidate an already-expired wake callback before the task joins its wait queue.
 
 ## Symptom Triage
 
@@ -343,7 +391,7 @@ Important details:
 | Immediate reset after MMU enable | wrong page table root, missing identity/current mapping, bad barrier/TLB flush, invalid jump target |
 | High-half fetch fault | kernel high map, relocation offset, symbol address basis, direct-map window |
 | TLB refill recursion | TLB refill vector address, stack mapping, refill handler mapping, CSR ordering |
-| Secondary CPU silent | `cpu_on` argument, cache flush, stack, per-CPU base, trap setup, logical CPU ID mapping |
+| Secondary CPU silent | inspect the per-CPU `KICKED/ALIVE/SHOULD_ONLINE` state and the active startup handle first: `KICKED` means transport/common-entry progress is missing, while `ALIVE` means the control path has not called `release`; then check architecture wake delivery, CPU-on argument, cache flush, stack, per-CPU base, trap setup, and logical CPU ID mapping. A second `start_secondary_cpu` must return `StartupInProgress`, not spin. On x86 verify SIPI is `APIC_DM_STARTUP` (`0x600`) rather than INIT level encoding, and never clear the active owner after a dropped handle or timeout because a late AP may still use the shared trampoline. |
 | ArceOS works but Starry fails | rootfs staging, std/musl ABI, console/input feature, tty assumptions, CPR sizing |
 | Starry shell works but grouped tests fail | generated runner path, copied assets, success regex, `shell_init_cmd` versus `test_commands` |
 | AArch64 Axvisor stops at first dynamic MMIO read | missing `ax-cpu/arm-el2`, inactive EL1 page-table root, stale `TTBR0_EL2` boot table |

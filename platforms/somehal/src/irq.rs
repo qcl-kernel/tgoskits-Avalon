@@ -1,11 +1,7 @@
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU16, Ordering};
 
-#[cfg(not(test))]
-use ax_kspin::SpinNoIrq as IrqRouteMutex;
-use ax_kspin::SpinRaw as Mutex;
-#[cfg(test)]
-use ax_kspin::SpinRaw as IrqRouteMutex;
+use ax_sync::{RawSpinLockGuard, SpinLock, SpinLockIrqSaveGuard};
 pub use rdif_intc;
 use rdif_intc::Intc;
 pub type ControllerIrqId = irq_framework::IrqId;
@@ -68,13 +64,18 @@ struct IrqRoute {
     leaf: IrqId,
 }
 
-static IRQ_DOMAINS: Mutex<Vec<IrqDomain>> = Mutex::new(Vec::new());
-static IRQ_ROUTES: IrqRouteMutex<Vec<IrqRoute>> = IrqRouteMutex::new(Vec::new());
+static IRQ_DOMAINS: SpinLock<Vec<IrqDomain>> = SpinLock::new(Vec::new());
+static IRQ_ROUTES: SpinLock<Vec<IrqRoute>> = SpinLock::new(Vec::new());
 
-#[cfg(not(test))]
-const _: fn(&IrqRouteMutex<Vec<IrqRoute>>) = |lock| {
-    let _: &ax_kspin::SpinNoIrq<Vec<IrqRoute>> = lock;
-};
+fn irq_domains() -> RawSpinLockGuard<'static, Vec<IrqDomain>> {
+    // SAFETY: callers preserve the legacy raw-lock contract and exclude local
+    // re-entry while mutating the global domain registry.
+    unsafe { IRQ_DOMAINS.lock_raw() }
+}
+
+fn irq_routes() -> SpinLockIrqSaveGuard<'static, Vec<IrqRoute>> {
+    IRQ_ROUTES.lock_irqsave()
+}
 static X86_IOAPIC_DOMAIN_SLOT: AtomicU16 = AtomicU16::new(INVALID_IRQ_DOMAIN);
 static X86_MSI_DOMAIN_SLOT: AtomicU16 = AtomicU16::new(INVALID_IRQ_DOMAIN);
 static AARCH64_GIC_DOMAIN_SLOT: AtomicU16 = AtomicU16::new(INVALID_IRQ_DOMAIN);
@@ -118,7 +119,7 @@ fn register_domain(
     parent: Option<IrqDomainId>,
     kind: IrqDomainKind,
 ) -> Result<IrqDomainId, IrqError> {
-    let mut domains = IRQ_DOMAINS.lock();
+    let mut domains = irq_domains();
 
     match parent {
         Some(parent) => {
@@ -220,7 +221,7 @@ pub fn domain_by_id(id: IrqDomainId) -> Option<IrqDomain> {
 }
 
 pub fn domain_by_owner(owner: DeviceId) -> Option<IrqDomain> {
-    let domains = IRQ_DOMAINS.lock();
+    let domains = irq_domains();
     domains
         .iter()
         .find(|domain| domain.owner == owner && domain.parent.is_none())
@@ -278,6 +279,16 @@ impl ActiveIrq {
         crate::arch::take_plic_claim(&mut self.inner)
             .map(|(context, source)| RiscvPlicClaim { context, source })
     }
+
+    #[cfg(target_arch = "aarch64")]
+    pub fn priority(&self) -> Option<u8> {
+        self.inner.priority()
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    pub fn forward_to_guest(self) -> bool {
+        self.inner.forward_to_guest()
+    }
 }
 
 /// A detached RISC-V PLIC claim whose completion may run on another CPU.
@@ -317,7 +328,7 @@ pub fn map_irq_route(parent: IrqId, leaf: IrqId) -> Result<(), IrqError> {
         return Err(IrqError::InvalidIrq);
     }
 
-    let domains = IRQ_DOMAINS.lock();
+    let domains = irq_domains();
     if !domains.iter().any(|domain| domain.id == parent.domain)
         || !domain_has_strict_ancestor(&domains, leaf.domain, parent.domain)
     {
@@ -325,7 +336,7 @@ pub fn map_irq_route(parent: IrqId, leaf: IrqId) -> Result<(), IrqError> {
     }
     drop(domains);
 
-    let mut routes = IRQ_ROUTES.lock();
+    let mut routes = irq_routes();
     if let Some(route) = routes.iter().find(|route| route.parent == parent) {
         return if route.leaf == leaf {
             Ok(())
@@ -365,7 +376,7 @@ fn domain_has_strict_ancestor(
 }
 
 pub fn unmap_irq_route(parent: IrqId, leaf: IrqId) -> Result<(), IrqError> {
-    let mut routes = IRQ_ROUTES.lock();
+    let mut routes = irq_routes();
     let Some(index) = routes
         .iter()
         .position(|route| route.parent == parent && route.leaf == leaf)
@@ -555,8 +566,8 @@ mod tests {
     static TEST_LOCK: Mutex<()> = Mutex::new(());
 
     fn reset_domains() {
-        IRQ_DOMAINS.lock().clear();
-        IRQ_ROUTES.lock().clear();
+        irq_domains().clear();
+        irq_routes().clear();
         for kind in [
             IrqDomainKind::X86IoApic,
             IrqDomainKind::X86Msi,
@@ -625,6 +636,24 @@ mod tests {
             alloc_irq_domain(owner_b, IrqDomainKind::AArch64Gic),
             Err(IrqError::Unsupported)
         );
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn public_gic_selector_resolves_to_the_dynamic_domain() {
+        use crate::common::PlatOp;
+
+        let _guard = TEST_LOCK.lock();
+        reset_domains();
+
+        let dynamic = alloc_irq_domain(DeviceId::new(), IrqDomainKind::AArch64Gic).unwrap();
+        let resolved =
+            <crate::arch::Plat as PlatOp>::resolve_irq_source(IrqSource::ControllerLine {
+                domain: AARCH64_GIC_DOMAIN,
+                hwirq: HwIrq(35),
+            });
+
+        assert_eq!(resolved, Ok(IrqId::new(dynamic, HwIrq(35))));
     }
 
     #[test]

@@ -42,6 +42,8 @@ default = []
 host-xtask = []
 axtest = []
 fs = ["ax-std/ext4fs", "ax-std/fatfs", "axvm/host-fs"]
+rt-poll-idle = ["axvm/rt-poll-idle"]
+rt-shared-wait-baseline = ["axvm/rt-shared-wait-baseline"]
 sstc = ["axvm/sstc"]
 stack-protector = ["ax-std/stack-protector"]
 backtrace = ["ax-std/backtrace", "dep:axbacktrace"]
@@ -50,6 +52,7 @@ test-panic-no-backtrace = ["dep:axbacktrace"]
 
 [dependencies]
 shlex.workspace = true
+ax-crate-interface.workspace = true
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(axtest)', 'cfg(feature, values("ax-std"))'] }
@@ -59,6 +62,7 @@ anyhow.workspace = true
 log = "0.4"
 
 # System dependent modules provided by ArceOS.
+ax-api.workspace = true
 ax-std = { workspace = true, default-features = false, features = [
   "alloc",
   "fd",
@@ -76,12 +80,19 @@ ax-std = { workspace = true, default-features = false, features = [
 # ax-runtime = { version = "=0.3.0-preview.1", features = ["alloc", "irq", "paging", "smp", "multitask"] }
 axvm = { workspace = true, default-features = false, features = ["tls"] }
 axvmconfig = { workspace = true, default-features = false }
+axvm-types.workspace = true
+axdevice.workspace = true
+axdevice_base.workspace = true
+axvirtio-common.workspace = true
+axvirtio-blk.workspace = true
+axvirtio-net.workspace = true
+toml.workspace = true
 ax-driver = { workspace = true, optional = true }
 axbacktrace = { workspace = true, optional = true }
 
 [dev-dependencies]
 axtest.workspace = true
-ax-hal = { workspace = true, features = ["paging", "irq", "smp", "hv"] }
+ax-hal = { workspace = true, features = ["paging", "irq", "smp", "hv", "axtest"] }
 ax-task = { workspace = true, features = ["axtest"] }
 
 # xtask dependencies (only used on host platforms)
@@ -98,3 +109,6 @@ proc-macro2 = { workspace = true }
 quote = { workspace = true }
 syn = { workspace = true }
 toml = { workspace = true, features = ["std", "serde", "parse", "display"] }
+
+[target.'cfg(target_arch = "aarch64")'.dependencies]
+axplat-dyn = { workspace = true, features = ["hv"] }
