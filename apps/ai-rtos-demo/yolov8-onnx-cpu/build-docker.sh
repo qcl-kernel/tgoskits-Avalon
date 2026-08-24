@@ -7,12 +7,22 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 image="${AICP_DOCKER_IMAGE:-clion-ubuntu:24.04}"
+docker_bin="${AICP_DOCKER_BIN:-docker}"
 
-if ! docker image inspect "${image}" >/dev/null 2>&1; then
+if ! command -v "${docker_bin}" >/dev/null 2>&1; then
+  if [[ -x /Applications/Docker.app/Contents/Resources/bin/docker ]]; then
+    docker_bin=/Applications/Docker.app/Contents/Resources/bin/docker
+  else
+    echo "[aicp-yolo-cpu] Docker CLI not found; set AICP_DOCKER_BIN to its path" >&2
+    exit 1
+  fi
+fi
+
+if ! "${docker_bin}" image inspect "${image}" >/dev/null 2>&1; then
   image="ubuntu:24.04"
 fi
 
-docker run --rm \
+"${docker_bin}" run --rm \
   -v "${repo_root}:/work" \
   -w /work \
   "${image}" \
