@@ -2,7 +2,7 @@
 
 本目录只保留当前 `dev` 可复现的 AxVisor 多客户机智能控制验证入口。
 Linux（2 vCPU）到 ArceOS、FreeRTOS、RT-Thread 或 Zephyr（各 1 vCPU）的 AICP v1 over TCP/IP 均有独立运行路径：Linux
-运行轻量神经网络控制策略，控制 Guest 接收控制参数、执行控制环并回传状态。当前已留存完整 QEMU 运行证据的是 Linux 到 ArceOS 和 FreeRTOS 的主链路；RT-Thread、Zephyr 与 YOLOv8 路径必须在本机独立运行成功并保存日志后，才可声称完成验证。
+运行轻量神经网络控制策略，控制 Guest 接收控制参数、执行控制环并回传状态。当前已留存完整 QEMU 运行证据的是 Linux 到 ArceOS 和 FreeRTOS 的主链路，以及 Linux–ArceOS 的 Rust YOLOv8n + ONNX Runtime CPU 三图闭环；RT-Thread 和 Zephyr 保留同一入口的构建与运行路径。
 ArceOS 与 FreeRTOS 两组使用 AxVisor 的 `virtio-net` 虚拟设备和虚拟交换机；RT-Thread
 与 Zephyr 组使用 QEMU hub 与分配给两个 Guest 的 legacy VirtIO-MMIO 网卡。四组主数据通道均为
 TCP/IP，不使用 vsock、共享内存或 HyperCall。

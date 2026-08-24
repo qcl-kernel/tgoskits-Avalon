@@ -26,12 +26,15 @@ for tool in curl cmake make aarch64-linux-gnu-g++ file python3; do
     need_apt=1
   fi
 done
+if ! python3 -m pip --version >/dev/null 2>&1; then
+  need_apt=1
+fi
 if [[ "${need_apt}" == "1" ]]; then
   apt-get update
   apt-get install -y --no-install-recommends \
     ca-certificates curl cmake make file \
     gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
-    python3 python3-pip
+    python3 python3-pip libgl1
 fi
 
 demo_dir=apps/ai-rtos-demo/yolov8-onnx-cpu
@@ -65,40 +68,36 @@ mkdir -p "${demo_dir}/validation"
 cp "${validation_src}"/*.jpg "${validation_src}/images.txt" "${demo_dir}/validation/"
 
 if [[ ! -f "${model_dir}/yolov8n.onnx" ]]; then
-  urls=()
   if [[ -n "${YOLOV8_ONNX_URL:-}" ]]; then
-    urls+=("${YOLOV8_ONNX_URL}")
-  fi
-  urls+=(
-    "https://github.com/ultralytics/assets/releases/download/v8.3.0/yolov8n.onnx"
-    "https://github.com/ultralytics/assets/releases/download/v8.2.0/yolov8n.onnx"
-    "https://github.com/ultralytics/assets/releases/download/v8.1.0/yolov8n.onnx"
-  )
-  for url in "${urls[@]}"; do
-    echo "[aicp-yolo-cpu] trying model URL ${url}"
-    if curl -L --fail --retry 3 --retry-delay 2 -o "${model_dir}/yolov8n.onnx.tmp" "${url}"; then
-      mv "${model_dir}/yolov8n.onnx.tmp" "${model_dir}/yolov8n.onnx"
-      break
+    echo "[aicp-yolo-cpu] downloading ${YOLOV8_ONNX_URL}"
+    curl -L --fail --retry 5 --retry-delay 2 \
+      -o "${model_dir}/yolov8n.onnx.tmp" "${YOLOV8_ONNX_URL}"
+    mv "${model_dir}/yolov8n.onnx.tmp" "${model_dir}/yolov8n.onnx"
+  else
+    weights="${model_dir}/yolov8n.pt"
+    weights_url="${YOLOV8_WEIGHTS_URL:-https://github.com/ultralytics/assets/releases/download/v8.4.0/yolov8n.pt}"
+    if [[ ! -f "${weights}" ]]; then
+      echo "[aicp-yolo-cpu] downloading ${weights_url}"
+      curl -L --fail --retry 5 --retry-delay 2 -o "${weights}.tmp" "${weights_url}"
+      mv "${weights}.tmp" "${weights}"
     fi
-  done
-  rm -f "${model_dir}/yolov8n.onnx.tmp"
-fi
+    weights="$(realpath "${weights}")"
 
-if [[ ! -f "${model_dir}/yolov8n.onnx" ]]; then
-  echo "[aicp-yolo-cpu] direct ONNX asset unavailable; exporting with ultralytics"
-  # Export happens on the host side only.  Pull the CPU wheel explicitly so a
-  # GPU-enabled PyTorch resolver cannot download CUDA packages that are never
-  # used by this ONNX Runtime CPU deployment.
-  python3 -m pip install --break-system-packages --no-cache-dir \
-    --index-url https://download.pytorch.org/whl/cpu \
-    torch torchvision
-  python3 -m pip install --break-system-packages --no-cache-dir ultralytics onnx
-  tmp_export="$(mktemp -d)"
-  (
-    cd "${tmp_export}"
-    yolo export model=yolov8n.pt format=onnx opset=12 imgsz=640 simplify=False
-  )
-  cp "${tmp_export}/yolov8n.onnx" "${model_dir}/yolov8n.onnx"
+    echo "[aicp-yolo-cpu] exporting YOLOv8n weights to ONNX"
+    # Export happens on the host side only. Pull the CPU wheel explicitly so a
+    # GPU-enabled PyTorch resolver cannot download CUDA packages that are never
+    # used by this ONNX Runtime CPU deployment.
+    python3 -m pip install --break-system-packages --no-cache-dir \
+      --index-url https://download.pytorch.org/whl/cpu \
+      torch torchvision
+    python3 -m pip install --break-system-packages --no-cache-dir ultralytics onnx
+    tmp_export="$(mktemp -d)"
+    (
+      cd "${tmp_export}"
+      yolo export model="${weights}" format=onnx opset=12 imgsz=640 simplify=False
+    )
+  fi
+  test -f "${model_dir}/yolov8n.onnx"
 fi
 
 cmake -S "${demo_dir}" -B "${build_dir}" \

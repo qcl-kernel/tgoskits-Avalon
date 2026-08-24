@@ -13,7 +13,7 @@
 | `技术文档/技术报告与复现手册.md` | 当前已执行验证的精简技术报告 |
 | `技术文档/测试报告.md` | 当前已执行命令、结果、测量边界与未完成项 |
 | `源代码/README.md` | 本成果分支中源码的责任边界与入口 |
-| `验证日志/README.md` | 已执行 QEMU 验证的关键标记摘录及其解释边界 |
+| `验证日志/README.md` | 已执行 QEMU 验证的关键标记摘录 |
 | `演示视频/AxVisor_AICP_真实运行演示.mp4` | Linux–FreeRTOS 双 Guest AICP TCP/IP 控制闭环的隔离桌面实录 |
 
 ## 与赛题及 #2154 的对应关系
@@ -22,11 +22,11 @@
 | --- | --- | --- |
 | 任务一：实时性改造与验证 | `rt-poll-idle` vCPU idle/poll 路径、定时器/设备 poll 推进、共享等待对照配置 | AxVM 7 组 feature 静态检查、312 项 host-test、AArch64 `rt-poll-idle-timer-wake` QEMU 回归 |
 | 任务二：客户机间通信 | AICP v1、VirtIO 虚拟网卡、TCP 主通道及 UDP 可靠性对比、C/Rust 协议和服务测试 | 13 项 C 协议、10 项 Rust 协议、8 项 ArceOS 服务测试；Linux–ArceOS、Linux–FreeRTOS TCP/IP 双 Guest smoke |
-| 任务三：AI 模型与控制联动 | Linux 轻量神经网络输出、AICP 控制命令、RTOS 控制状态更新与 STATUS 回传 | `CONTROL`/`AICP_FREERTOS_CONTROL`、`AICP_LINUX_DONE`、RTT/服务时间字段和 3 次事务 QEMU 闭环 |
+| 任务三：AI 模型与控制联动 | Linux 轻量神经网络及 YOLOv8n ONNX Runtime CPU 推理、AICP 控制命令、RTOS 控制状态更新与 STATUS 回传 | Linux–ArceOS、Linux–FreeRTOS 轻量神经网络闭环；YOLOv8n–ArceOS 3 图推理、控制与状态回传 |
 
 ## 当前可复现主线
 
-当前已实跑的主线包括：**AxVisor/QEMU AArch64 上 Linux（2 vCPU）经 VirtIO 虚拟网卡，以 AICP v1 over TCP/IP 向 ArceOS（1 vCPU）或 FreeRTOS（1 vCPU）控制 Guest 下发轻量神经网络输出，并接收控制状态回传。**
+当前已实跑的主线包括：**AxVisor/QEMU AArch64 上 Linux（2 vCPU）经 VirtIO 虚拟网卡，以 AICP v1 over TCP/IP 向 ArceOS（1 vCPU）或 FreeRTOS（1 vCPU）控制 Guest 下发轻量神经网络输出并接收状态回传；Linux–ArceOS 还完成了 Rust YOLOv8n + ONNX Runtime CPU 的三图推理、控制下发与状态回传。**
 
 快速复现前，请确保宿主具有 `cargo`、`cpio`、`gzip`、`perl`、`qemu-system-aarch64`、`debugfs` 与 `e2fsck`：
 
@@ -45,3 +45,14 @@ AICP_LINUX_DONE ok=3 failed=0
 ```
 
 并由 runner 输出闭环完成结果。
+
+YOLOv8n 闭环复现：
+
+```sh
+apps/ai-rtos-demo/yolov8-onnx-cpu/build-docker.sh
+apps/ai-rtos-demo/yolov8-rust-onnx/build-aarch64-docker.sh
+AICP_CLIENT_IMPL=yolo-rust scripts/ai-rtos/aicp.sh run linux arceos 3 ai 600
+```
+
+成功时 Linux Guest 输出 `AICP_YOLO_RUST_BEGIN`、三次
+`AICP_YOLO_RUST_CONTROL` 和 `AICP_YOLO_RUST_DONE ok=3 failed=0`。

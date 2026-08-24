@@ -70,7 +70,7 @@ scripts/ai-rtos/aicp.sh full
 | Linux（2 vCPU） | Zephyr（1 vCPU） | AICP v1 over TCP/IP |
 | Linux YOLOv8n ONNX Runtime（2 vCPU） | ArceOS（1 vCPU） | AICP v1 over TCP/IP |
 
-当前已留存的完整 QEMU 闭环证据包括 Linux（2 vCPU）到 ArceOS（1 vCPU）的轻量神经网络控制路径，以及 Linux（2 vCPU）到 FreeRTOS（1 vCPU）的轻量神经网络控制路径。RT-Thread、Zephyr 和 YOLOv8 条目是按同一边界实现的构建与运行入口；在各自命令成功并保存对应日志前，不应标注为“已实际验证”。
+当前已留存的完整 QEMU 闭环证据包括 Linux（2 vCPU）到 ArceOS（1 vCPU）的轻量神经网络控制路径、Linux（2 vCPU）到 FreeRTOS（1 vCPU）的轻量神经网络控制路径，以及 Linux–ArceOS 的 Rust YOLOv8n + ONNX Runtime CPU 三图推理控制路径。RT-Thread 和 Zephyr 条目按相同边界提供构建与运行入口。
 
 ArceOS 与 FreeRTOS 使用 AxVisor 的 VirtIO-MMIO v2 虚拟设备和虚拟交换机。RT-Thread
 与 Zephyr 使用 QEMU hub 连接两块分配给 Guest 的 legacy VirtIO-MMIO 设备；三组
