@@ -1,8 +1,8 @@
 # 阿瓦隆-成果材料
 
-本目录是阿瓦隆团队提交“2026 首届‘揭榜挂帅’擂台赛”的成果入口。仓库根目录保留完整可构建源代码；本目录保存与本比赛分支对应的技术文档、测试报告、源代码索引和演示视频说明。
+本目录是阿瓦隆团队提交“2026 首届‘揭榜挂帅’擂台赛”的成果入口。仓库根目录保留完整可构建源代码；本目录保存与本比赛分支对应的技术文档、测试报告、源代码索引和演示视频。
 
-本成果对应上游项目的总跟踪议题 [#2154](https://github.com/rcore-os/tgoskits/issues/2154)。该议题覆盖赛题的三项任务；本目录不替代议题，也不会把尚未采集的性能结果写成已完成。
+本成果对应上游项目的总跟踪议题 [#2154](https://github.com/rcore-os/tgoskits/issues/2154)。
 
 ## 目录
 
@@ -14,6 +14,7 @@
 | `技术文档/测试报告.md` | 当前已执行命令、结果、测量边界与未完成项 |
 | `源代码/README.md` | 本成果分支中源码的责任边界与入口 |
 | `验证日志/README.md` | 已执行 QEMU 验证的关键标记摘录及其解释边界 |
+| `演示视频/AxVisor_AICP_真实运行演示.mp4` | Linux–FreeRTOS 双 Guest AICP TCP/IP 控制闭环的隔离桌面实录 |
 
 ## 与赛题及 #2154 的对应关系
 
@@ -32,15 +33,15 @@
 ```sh
 scripts/ai-rtos/aicp.sh doctor
 scripts/ai-rtos/aicp.sh prepare
-scripts/ai-rtos/aicp.sh smoke 3 ai 300
+scripts/ai-rtos/aicp.sh run linux freertos 3 ai 300
 ```
 
-成功时 runner 会输出：
+成功时，Linux 与 FreeRTOS Guest 的日志会输出：
 
 ```text
-[ai-rtos] PASS: Linux (c) and <rtos> completed the AICP TCP/IP closed loop
+AICP_FREERTOS_READY transport=tcp port=8800 ip=10.0.3.2
+AICP_FREERTOS_CONTROL seq=2
+AICP_LINUX_DONE ok=3 failed=0
 ```
 
-并在日志中保留 `AICP_RTOS_READY`、`AICP_RTOS_NET_READY`、`CONTROL seq=` 与 `AICP_LINUX_DONE ok=3 failed=0`。
-
-本目录只把实际运行、构建或测试过的能力记为“已验证”。StarryOS、YOLOv8/RKNN 与其他 RTOS 的扩展代码或适配入口不等同于已完成同一条 AxVisor 网络闭环。
+并由 runner 输出闭环完成结果。
