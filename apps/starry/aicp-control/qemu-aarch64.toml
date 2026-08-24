@@ -1,0 +1,24 @@
+args = [
+    "-nographic",
+    "-m",
+    "512M",
+    "-cpu",
+    "cortex-a53",
+    "-smp",
+    "2",
+    "-device",
+    "nvme,drive=disk0,serial=tgoskits,max_ioqpairs=64,msix_qsize=65",
+    "-drive",
+    "id=disk0,if=none,format=raw,file=${workspace}/tmp/axbuild/rootfs/rootfs-aarch64-alpine.img",
+    "-device",
+    "virtio-net-pci,netdev=net0",
+    "-netdev",
+    "user,id=net0,hostfwd=tcp::18800-:8800",
+]
+uefi = false
+to_bin = true
+shell_prefix = "root@starry:"
+shell_init_cmd = "/usr/bin/aicp-starry-run.sh"
+success_regex = ['(?m)^AICP_STARRY_DONE ok=[1-9][0-9]* failed=0(?:$|\s)']
+fail_regex = ['(?i)(?:^|\s)panic(?:ked)?(?:$|\s)', '(?m)^AICP_STARRY_DONE ok=[0-9]+ failed=[1-9][0-9]*(?:$|\s)']
+timeout = 300
