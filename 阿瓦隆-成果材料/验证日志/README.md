@@ -26,6 +26,30 @@ AICP_LINUX_DONE ok=3 failed=0 avg_rtt_ns=209135104 max_rtt_ns=240836240
 
 RTT 数值来自容器内嵌套 QEMU 的该次运行，只用于证明端到端测量字段和闭环链路存在；它不是固定硬件平台下的最坏时延结论。
 
+## Linux–RT-Thread 双 Guest AICP TCP/IP 闭环
+
+已执行命令：
+
+```sh
+scripts/ai-rtos/aicp.sh run linux rtthread 3 ai 900
+```
+
+一次实际 QEMU 运行的关键输出如下：
+
+```text
+AICP_RTTHREAD_STATIC_NET ret=0 dev=virtio ip=10.0.3.2 netmask=255.255.255.0 gateway=10.0.3.1
+AICP_RTTHREAD_NET_UP dev=virtio ip=10.0.3.2 flags=0x2b link=0
+AICP_RTTHREAD_READY transport=tcp port=8800
+AICP_RTTHREAD_CLIENT_CONNECTED
+AICP_RTTHREAD_HELLO seq=1 payload_len=54
+AICP_RTTHREAD_CONTROL seq=2 target_milli=480 measured_milli=259 output_milli=499 mode=1
+AICP_RTTHREAD_CONTROL seq=3 target_milli=495 measured_milli=278 output_milli=154 mode=1
+AICP_RTTHREAD_CONTROL seq=4 target_milli=510 measured_milli=302 output_milli=201 mode=1
+AICP_RTTHREAD_STATS reason=disconnect clients=1 disconnects=1 controls=3 errors=0 duplicates=0 stale=0 irq=40 rx_frames=24 tx_frames=17
+AICP_LINUX_DONE ok=3 failed=0 avg_rtt_ns=309979296 max_rtt_ns=431733504
+[ai-rtos] PASS: Linux (c) and rtthread completed the AICP TCP/IP closed loop
+```
+
 ## Linux–ArceOS YOLOv8n ONNX Runtime CPU 闭环
 
 已执行命令：

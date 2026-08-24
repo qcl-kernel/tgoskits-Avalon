@@ -21,12 +21,12 @@
 | 赛题任务 | 本分支交付 | 当前可验证证据 |
 | --- | --- | --- |
 | 任务一：实时性改造与验证 | `rt-poll-idle` vCPU idle/poll 路径、定时器/设备 poll 推进、共享等待对照配置 | AxVM 7 组 feature 静态检查、312 项 host-test、AArch64 `rt-poll-idle-timer-wake` QEMU 回归 |
-| 任务二：客户机间通信 | AICP v1、VirtIO 虚拟网卡、TCP 主通道及 UDP 可靠性对比、C/Rust 协议和服务测试 | 13 项 C 协议、10 项 Rust 协议、8 项 ArceOS 服务测试；Linux–ArceOS、Linux–FreeRTOS TCP/IP 双 Guest smoke |
-| 任务三：AI 模型与控制联动 | Linux 轻量神经网络及 YOLOv8n ONNX Runtime CPU 推理、AICP 控制命令、RTOS 控制状态更新与 STATUS 回传 | Linux–ArceOS、Linux–FreeRTOS 轻量神经网络闭环；YOLOv8n–ArceOS 3 图推理、控制与状态回传 |
+| 任务二：客户机间通信 | AICP v1、VirtIO 虚拟网卡、TCP 主通道及 UDP 可靠性对比、C/Rust 协议和服务测试 | 13 项 C 协议、10 项 Rust 协议、8 项 ArceOS 服务测试；Linux–ArceOS、Linux–FreeRTOS、Linux–RT-Thread TCP/IP 双 Guest smoke |
+| 任务三：AI 模型与控制联动 | Linux 轻量神经网络及 YOLOv8n ONNX Runtime CPU 推理、AICP 控制命令、RTOS 控制状态更新与 STATUS 回传 | Linux–ArceOS、Linux–FreeRTOS、Linux–RT-Thread 轻量神经网络闭环；YOLOv8n–ArceOS 3 图推理、控制与状态回传 |
 
 ## 当前可复现主线
 
-当前已实跑的主线包括：**AxVisor/QEMU AArch64 上 Linux（2 vCPU）经 VirtIO 虚拟网卡，以 AICP v1 over TCP/IP 向 ArceOS（1 vCPU）或 FreeRTOS（1 vCPU）控制 Guest 下发轻量神经网络输出并接收状态回传；Linux–ArceOS 还完成了 Rust YOLOv8n + ONNX Runtime CPU 的三图推理、控制下发与状态回传。**
+当前已实跑的主线包括：**AxVisor/QEMU AArch64 上 Linux（2 vCPU）经 VirtIO 虚拟网卡，以 AICP v1 over TCP/IP 向 ArceOS、FreeRTOS 或 RT-Thread（各 1 vCPU）控制 Guest 下发轻量神经网络输出并接收状态回传；Linux–ArceOS 还完成了 Rust YOLOv8n + ONNX Runtime CPU 的三图推理、控制下发与状态回传。**
 
 快速复现前，请确保宿主具有 `cargo`、`cpio`、`gzip`、`perl`、`qemu-system-aarch64`、`debugfs` 与 `e2fsck`：
 
